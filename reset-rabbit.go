@@ -65,6 +65,9 @@ func sendRequest(ctx context.Context) {
 	// Send the request in a separate goroutine to allow closing the stream immediately
 	go func() {
 		_, err := client.Do(req)
+		if err != nil {
+			return
+		}
 	}()
 
 	// Attempt to close the stream immediately
