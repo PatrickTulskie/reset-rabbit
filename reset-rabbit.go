@@ -16,13 +16,16 @@ import (
 )
 
 var (
-	url           string
-	limit         int
-	sleepDuration time.Duration
-	sleepIncrease = time.Millisecond * 10 // Amount to increase sleep by
-	sleepDecrease = time.Millisecond * 5  // Amount to decrease sleep by
-	minSleep      = time.Millisecond * 10 // Minimum sleep duration
-	maxSleep      = time.Second           // Maximum sleep duration
+	url                  string
+	limit                int
+	sleepDuration        time.Duration
+	sleepIncrease        = time.Millisecond * 10 // Amount to increase sleep by
+	sleepDecrease        = time.Millisecond * 10 // Amount to decrease sleep by
+	minSleep             = time.Millisecond * 10 // Minimum sleep duration
+	maxSleep             = time.Second           // Maximum sleep duration
+	downCheckInterval    = time.Second * 20
+	upCheckInterval      = time.Second * 2
+	downCheckAdjustCount = 10
 )
 
 func init() {
@@ -78,9 +81,12 @@ func sendRequest(ctx context.Context) {
 
 func monitorSite(ctx context.Context, url string, statusChan chan time.Duration) {
 	var (
-		siteUp     bool // Tracks the current state of the site
-		prevSiteUp bool // Tracks the previous state of the site
-		firstCheck = true
+		siteUp             bool
+		prevSiteUp         bool
+		firstCheck         = true
+		sweetSpotFound     = false
+		sweetSpotThreshold = time.Millisecond * 20
+		downCheckCount     = 0
 	)
 
 	for {
@@ -89,46 +95,59 @@ func monitorSite(ctx context.Context, url string, statusChan chan time.Duration)
 			return
 		default:
 			client := &http.Client{
-				Timeout: time.Second * 2, // Adjust timeout as needed
+				Timeout: time.Second * 10, // Adjust timeout as needed
 				Transport: &http2.Transport{
 					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 				},
 			}
 
 			_, err := client.Get(url)
-			if err != nil {
-				siteUp = false
-			} else {
-				siteUp = true
-			}
+			siteUp = err == nil
 
-			// Only output a message if the site state has changed, or on the first check
+			// Output a message if the site state has changed, or on the first check
 			if siteUp != prevSiteUp || firstCheck {
 				if siteUp {
 					fmt.Println("The site is up")
 				} else {
 					fmt.Println("The site is down:", err)
 				}
+				sweetSpotFound = false // Reset sweet spot flag on state change
 			}
 
-			// Update sleepDuration based on site status and send it to main loop
-			if siteUp && !prevSiteUp {
-				sleepDuration += sleepIncrease
-				if sleepDuration > maxSleep {
-					sleepDuration = maxSleep
+			if !sweetSpotFound {
+				if siteUp {
+					sleepDuration -= sleepDecrease
+					if sleepDuration < minSleep {
+						sleepDuration = minSleep
+					}
+				} else {
+					downCheckCount++
+					if downCheckCount >= downCheckAdjustCount {
+						sleepDuration += sleepIncrease
+						if sleepDuration > maxSleep {
+							sleepDuration = maxSleep
+						}
+						downCheckCount = 0 // Reset downCheckCount after adjusting sleepDuration
+					}
 				}
-			} else if !siteUp && prevSiteUp {
-				sleepDuration -= sleepDecrease
-				if sleepDuration < minSleep {
-					sleepDuration = minSleep
+
+				// Check if the sleep duration adjustments are within the sweet spot threshold
+				if sleepDuration > minSleep+sweetSpotThreshold && sleepDuration < maxSleep-sweetSpotThreshold {
+					sweetSpotFound = true
+					fmt.Println("Sweet spot found:", sleepDuration)
 				}
 			}
 
 			statusChan <- sleepDuration
-			time.Sleep(time.Second * 10)
 
-			prevSiteUp = siteUp
-			firstCheck = false
+			if siteUp {
+				time.Sleep(upCheckInterval)
+			} else {
+				time.Sleep(downCheckInterval)
+			}
+
+			prevSiteUp = siteUp // Update prevSiteUp for the next iteration
+			firstCheck = false  // Update firstCheck since the first check has been completed
 		}
 	}
 }
