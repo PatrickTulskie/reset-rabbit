@@ -10,13 +10,19 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/net/http2"
 )
 
 var (
-	url   string
-	limit int
+	url           string
+	limit         int
+	sleepDuration time.Duration
+	sleepIncrease = time.Millisecond * 10 // Amount to increase sleep by
+	sleepDecrease = time.Millisecond * 5  // Amount to decrease sleep by
+	minSleep      = time.Millisecond * 10 // Minimum sleep duration
+	maxSleep      = time.Second           // Maximum sleep duration
 )
 
 func init() {
@@ -70,6 +76,63 @@ func sendRequest(ctx context.Context) {
 	}
 }
 
+func monitorSite(ctx context.Context, url string, statusChan chan time.Duration) {
+	var (
+		siteUp     bool // Tracks the current state of the site
+		prevSiteUp bool // Tracks the previous state of the site
+		firstCheck = true
+	)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			client := &http.Client{
+				Timeout: time.Second * 2, // Adjust timeout as needed
+				Transport: &http2.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				},
+			}
+
+			_, err := client.Get(url)
+			if err != nil {
+				siteUp = false
+			} else {
+				siteUp = true
+			}
+
+			// Only output a message if the site state has changed, or on the first check
+			if siteUp != prevSiteUp || firstCheck {
+				if siteUp {
+					fmt.Println("The site is up")
+				} else {
+					fmt.Println("The site is down:", err)
+				}
+			}
+
+			// Update sleepDuration based on site status and send it to main loop
+			if siteUp && !prevSiteUp {
+				sleepDuration += sleepIncrease
+				if sleepDuration > maxSleep {
+					sleepDuration = maxSleep
+				}
+			} else if !siteUp && prevSiteUp {
+				sleepDuration -= sleepDecrease
+				if sleepDuration < minSleep {
+					sleepDuration = minSleep
+				}
+			}
+
+			statusChan <- sleepDuration
+			time.Sleep(time.Second * 10)
+
+			prevSiteUp = siteUp
+			firstCheck = false
+		}
+	}
+}
+
 func main() {
 	var wg sync.WaitGroup
 
@@ -88,6 +151,12 @@ func main() {
 	// Create a channel to send work items to the workers
 	jobs := make(chan struct{}, limit) // Buffered channel with capacity equal to the limit
 
+	// Create a channel to communicate site status
+	statusChan := make(chan time.Duration)
+
+	// Start the site monitor goroutine
+	go monitorSite(ctx, url, statusChan)
+
 	// Create worker goroutines
 	for i := 0; i < limit; i++ {
 		wg.Add(1)
@@ -102,6 +171,8 @@ func main() {
 			wg.Wait()   // Wait for all workers to finish
 			fmt.Println("All workers finished. Exiting.")
 			return
+		case newSleep := <-statusChan:
+			sleepDuration = newSleep
 		default:
 			// Only send a new work item if there's room in the jobs channel
 			select {
@@ -109,6 +180,8 @@ func main() {
 			default:
 				// No room in the jobs channel; wait for a worker to become available
 			}
+
+			time.Sleep(sleepDuration) // Sleep to slow down requests if needed
 		}
 	}
 }
