@@ -30,7 +30,7 @@ var (
 
 func init() {
 	flag.StringVar(&url, "url", "", "URL to send requests to")
-	flag.IntVar(&limit, "limit", 0, "Limit on number of concurrent goroutines (0 for no limit)")
+	flag.IntVar(&limit, "limit", 1, "Limit on number of concurrent goroutines (0 for no limit)")
 	flag.Parse()
 	if url == "" {
 		fmt.Println("Please specify a URL using the -url flag.")
@@ -51,26 +51,20 @@ func worker(ctx context.Context, wg *sync.WaitGroup, jobs chan struct{}) {
 }
 
 func sendRequest(ctx context.Context) {
-	// Create an HTTP client with HTTP/2 support
 	client := &http.Client{
 		Transport: &http2.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
 	}
 
-	// Create a new request
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		// fmt.Println("Failed to create request:", err)
 		return
 	}
 
 	// Send the request in a separate goroutine to allow closing the stream immediately
 	go func() {
 		_, err := client.Do(req)
-		if err != nil {
-			// fmt.Println("Failed to send request:", err)
-		}
 	}()
 
 	// Attempt to close the stream immediately
@@ -146,8 +140,8 @@ func monitorSite(ctx context.Context, url string, statusChan chan time.Duration)
 				time.Sleep(downCheckInterval)
 			}
 
-			prevSiteUp = siteUp // Update prevSiteUp for the next iteration
-			firstCheck = false  // Update firstCheck since the first check has been completed
+			prevSiteUp = siteUp
+			firstCheck = false
 		}
 	}
 }
